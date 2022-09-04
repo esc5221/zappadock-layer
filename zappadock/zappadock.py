@@ -1,4 +1,4 @@
-import os
+import os, subprocess
 import json
 import platform
 import configparser
@@ -25,7 +25,7 @@ CMD ["bash"]
 
 def colored_echo(text, color=None):
     bold = False
-    if not text.startswith("  ") and not text.startswith(" "):
+    if color==None and not text.startswith("  ") and not text.startswith(" "):
         color = "cyan"
         bold = True
     return click.echo(click.style(text, fg=color, bold=bold))
@@ -52,6 +52,21 @@ def zappadock(image_source, platform):
     Your AWS credentials must be setup to use this tool.
     See https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html#environment-variables for more information.
     """
+
+    # Copy layer_manager.py to the current directory
+    colored_echo("Copying layer_manager.py to the current directory...")
+    try:
+        zappadock_path = os.path.dirname(os.path.abspath(__file__))
+        layer_manager_path = f"{zappadock_path}/commands/layer_manage.py"
+        cp_output = subprocess.check_call(["cp", layer_manager_path, "."])
+        if cp_output != 0:
+            raise
+    except Exception as e:
+        colored_echo("Error copying layer_manager.py", color="red")
+        colored_echo("  "+str(e), "red")
+        return
+    colored_echo("  Done")
+
     # Set Zappadock Docker Filename
     docker_file = ".zappadock-Dockerfile"
     project_name = os.path.basename(os.getcwd())
@@ -98,7 +113,7 @@ def zappadock(image_source, platform):
         repository_name = None
 
     # Summarize docker image source
-    colored_echo("Summary of docker image")
+    colored_echo("Summary of docker image source")
     colored_echo(f"  Image Source: {image_source}")
     colored_echo(f"  Repository  : {repository_name}")
     colored_echo(f"  Platform    : {platform}")
@@ -124,7 +139,6 @@ def zappadock(image_source, platform):
             docker_run_command.append(f"-e {i}={os.environ[i]}")
 
     # Get zapppadock-layer image
-
     # 1. Build image from Dockerfile
     if image_source_choice == "1":
         # Create Dockerfile if it doesn't exist
