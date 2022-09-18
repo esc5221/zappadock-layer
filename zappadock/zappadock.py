@@ -1,6 +1,6 @@
 import os, subprocess
 import json
-import platform
+import platform as _platform
 import configparser
 import traceback
 
@@ -16,9 +16,12 @@ WORKDIR /var/task
 RUN echo 'export PS1="\[\e[36m\]ZappaDock>\[\e[m\] "' >> /root/.bashrc && \\
     yum clean all && \\
     yum install -y which clang cmake python-devel python3-devel amazon-linux-extras gcc openssl-devel bzip2-devel libffi-devel wget tar gzip make postgresql-devel && \\
-    echo 'virtualenv -p python3 ./zappa-layer-venv >/dev/null' >> /root/.bashrc && \\
-    echo 'virtualenv -p python3 ./zappa-code-venv >/dev/null' >> /root/.bashrc && \\
-    echo 'source ./zappa-code-venv/bin/activate >/dev/null' >> /root/.bashrc
+    # if virtualenv already exists, skip this step
+    echo 'if [ ! -d /var/task/zappa-layer-venv ]; then virtualenv -p python3 /var/task/zappa-layer-venv; fi' >> /root/.bashrc && \\
+    echo 'if [ ! -d /var/task/zappa-code-venv ]; then virtualenv -p python3 /var/task/zappa-code-venv; fi' >> /root/.bashrc && \\
+    echo 'source ./zappa-code-venv/bin/activate >/dev/null' >> /root/.bashrc && \\
+    echo 'pip install zappa_layer >/dev/null' >> /root/.bashrc && \\
+    echo 'eval "$(_LAYER_MANAGE_COMPLETE=bash_source layer_manage)"' >> /root/.bashrc
 
 CMD ["bash"]
 """
@@ -32,14 +35,14 @@ def colored_echo(text, color=None):
 
 @click.command()
 @click.option(
-    "--image_source",
+    "--image_source", "-i",
     type=click.Choice(["build", "pull", "pull_default"]),
     required=False,
     default="pull_default",
     help="Specify how to get image.",
 )
 @click.option(
-    "--platform",
+    "--platform", "-p",
     type=click.Choice(["linux/amd64", "linux/arm64", "linux/arm/v7"]),
     required=False,
     help="Specify platform to build or pull image for. (if image support multi-arch)"
@@ -52,20 +55,6 @@ def zappadock(image_source, platform):
     Your AWS credentials must be setup to use this tool.
     See https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html#environment-variables for more information.
     """
-
-    # Copy layer_manager.py to the current directory
-    colored_echo("Copying layer_manager.py to the current directory...")
-    try:
-        zappadock_path = os.path.dirname(os.path.abspath(__file__))
-        layer_manager_path = f"{zappadock_path}/commands/layer_manage.py"
-        cp_output = subprocess.check_call(["cp", layer_manager_path, "."])
-        if cp_output != 0:
-            raise
-    except Exception as e:
-        colored_echo("Error copying layer_manager.py", color="red")
-        colored_echo("  "+str(e), "red")
-        return
-    colored_echo("  Done")
 
     # Set Zappadock Docker Filename
     docker_file = ".zappadock-Dockerfile"
@@ -147,7 +136,7 @@ def zappadock(image_source, platform):
             with open(docker_file, "w") as f:
 
                 # Find the current running Python version
-                python_version = ".".join(platform.python_version().split(".")[:2])
+                python_version = ".".join(_platform.python_version().split(".")[:2])
 
                 # Check if the current Python version is supported
                 if python_version not in ["3.6", "3.7", "3.8", "3.9"]:
@@ -157,7 +146,7 @@ def zappadock(image_source, platform):
                     exit()
 
                 # Check the current architecture
-                if platform.machine().lower() in [
+                if _platform.machine().lower() in [
                     "aarch64",
                     "arm64",
                     "armv7l",
@@ -170,8 +159,12 @@ def zappadock(image_source, platform):
 
                 # Get the base image
                 if python_version in ["3.8", "3.9"]:
-                    image = f"mlupin/docker-lambda:python{python_version}-build"
+                    if platform == "linux/amd64":
+                        image = f"mlupin/docker-lambda:python{python_version}-build-x86_64"
+                    else:
+                        image = f"mlupin/docker-lambda:python{python_version}-build"
                 else:
+                    colored_echo("Warning: Python 3.6 and 3.7 are not supported", "yellow")
                     image = f"lambci/lambda:build-python{python_version}"
 
                 # Write the Dockerfile
@@ -213,18 +206,20 @@ def zappadock(image_source, platform):
                 )
                 colored_echo("Exiting...")
                 exit()
+        docker_image = docker_image[0]
 
-    # 2. Pull image from Docker Hub
     elif image_source_choice == "2":
         # If Image already exists, use it
+        is_image_exists = False
         for image in docker_client.images.list():
             for tag in image.tags:
                 if tag == repository_name:
                     colored_echo("Using existing image...")
                     docker_image = image
+                    is_image_exists = True
                     break
         # Pull Docker Image
-        if docker_image is None:
+        if is_image_exists is False:
             colored_echo("Pulling from Docker Hub...")
             docker_image = docker_client.images.pull(
                 repository_name, platform=platform
